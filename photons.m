@@ -1,8 +1,8 @@
 %% MATLAB Implementation for analysis of photon stream data from the Picoqunt GmbH
 % Hydraharp.
 
-%% photons.m V6.0 @ HENDRIK UTZAT, KATIE SHULENBERGER, BORIS SPOKOYNY, TIMOTHY SINCLAIR, 2018
-% 10/18/2018
+%% photons.m V7.0 @ ALEX KAPLAN
+% primarily sourced from HENDRIK UTZAT, KATIE SHULENBERGER, BORIS SPOKOYNY, TIMOTHY SINCLAIR
 
 % This is an object-oritented implementation of a comprehensive
 % analysis library for time-tagged single photon arrival time data as

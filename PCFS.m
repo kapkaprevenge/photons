@@ -1,9 +1,9 @@
-%% PCFS.m V6.0 @ HENDRIK UTZAT 2018
-%  10/18/2018
+%% PCFS.m V7.0 @ ALEX KAPLAN 2021
+% framework from Hendrik Utzat 2018
 % Class definition for analysis of photon resolved PCFS files as generates
 % from the Labview instrument control software by HENDRIK UTZAT --V3.0
 
-% V6: Added a bunch of functions to analyze pulsed HOM-type measurements.
+% V6: Added a bunch of functions to analyze pulsed DotAg2-type measurements.
 
 classdef PCFS<dynamicprops
     properties
@@ -922,8 +922,8 @@ classdef PCFS<dynamicprops
                 
                 fun = @(params) five_Lorentzian_cost(tau,corr,params);
                 
-                lb=[0,0,0,0,0,params0(6)-200,1500,500];
-                ub=[20000,20000,60000,20000,20000,params0(6)+200,2100,1100];
+                lb=[0,0,0,0,0,params0(6)-200,params0(7)-100,params0(8)-200];
+                ub=[20000,20000,60000,20000,20000,params0(6)+200,params0(7)+100,params0(8)+200];
                 
                 gs = GlobalSearch;
                 problem = createOptimProblem('fmincon','x0',params0,...
@@ -958,13 +958,106 @@ classdef PCFS<dynamicprops
             end
             
         end
+        function obj=correct_HOM_fit(obj,params)
+             if ~isprop(obj,'adj_HOM_fit_params')
+                dummy=addprop(obj,'adj_HOM_fit_params')
+             end
+            
+            [N,M]=size(obj.HOM_interferogram.HOM_interferogram);
+%             obj.adj_HOM_fit_params = zeros(M,8);
+            ps_select = params(7)/2.5;
+            tau=obj.HOM_interferogram.lag;
+            
+            for i = 1:M
+                HOM_g2 = obj.HOM_interferogram.HOM_interferogram(:,i);
+                [new_HOM,peak_fit] = omit_center_lorentz(tau,HOM_g2,ps_select,abs(obj.all_HOM_fit_params(1,6)));
+                
+                [tau_select,corr_select]=get_center_quint(tau,new_HOM,30000);
+                size(tau_select)
+                size(corr_select)
+                optim_params=fit_center_quintett(tau_select,corr_select,params);
+                
+                figure()
+                plot(tau(2:end),new_HOM); hold on
+                plot(tau(1:end-1),five_Gaussians(tau(1:end-1),optim_params));
+                return
+                
+                optim_params(3) = peak_fit;
+                obj.adj_HOM_fit_params(i,:)=optim_params;
+            end
+            
+            function [optim_params]=fit_center_quintett(tau,corr,params0)
+                params0(3) = 0;
+                 
+                fun = @(params) five_Gaussians_cost(tau,corr,params);
+                
+                lb=[0,0,0,0,0,params0(6)-20,params0(7)-20,params0(8)-20];
+                ub=[20000,20000,0,20000,20000,params0(6)+20,params0(7)+20,params0(8)+20];
+                
+                gs = GlobalSearch;
+                problem = createOptimProblem('fmincon','x0',params0,...
+                    'objective',fun,'lb',lb,'ub',ub);
+                
+                optim_params = run(gs,problem);
+            end
+            
+            function [new_g2,peak] = omit_center_lorentz(tau,corr,ps_range,center_tau)
+                delta_tau=abs(tau(1)-tau(2)); % this gets the tau increment from the correlation function
+                center_point=floor(N/2)+1
+                N_points=floor(ps_range/delta_tau)+1
+                
+                center_cost = @(param2) sum((corr(center_point-N_points:center_point+N_points)-one_Lorentz(param2,tau(center_point-N_points:center_point+N_points)',center_tau)).^2);
+                init0 = [800,100];
+                lb = [0,0];
+                ub = [100000,1000]
+                
+                gs = GlobalSearch;
+                problem = createOptimProblem('fmincon','x0',init0,...
+                    'objective',center_cost,'lb',lb,'ub',ub);
+                
+                output = run(gs,problem)
+                
+                figure()
+                plot(tau(2:end),one_Lorentz(output,tau(2:end)',center_tau)); hold on
+                plot(tau(2:end),corr);
+                
+                new_g2 = corr - one_Lorentz(output,tau(2:end)',center_tau);
+                peak = output(1);
+                
+                figure()
+                plot(tau(2:end),new_g2)
+            end
+            function [tau_select,corr_select]=get_center_quint(tau,corr,ps_range_select)
+                
+                delta_tau=abs(tau(1)-tau(2)); % this gets the tau increment from the correlation function
+                
+                N=length(tau)
+                center_point=floor(N/2)+1;
+                N_points=floor(ps_range_select/delta_tau)+1
+                ll=length(corr)
+                
+                % selects +- 6ns from the correlation function which is the center
+                % part.
+                tau_select=tau(center_point-N_points:center_point+N_points);
+                corr_select=corr(center_point-N_points:center_point+N_points);
+                
+            end
+            
+            function lorr = one_Lorentz(params1,tau,x0)
+                LOR=1./((tau-x0).^2+(0.5*params1(2)).^2);
+                LOR = LOR./max(LOR);
+                LOR = params1(1).*LOR;
+                lorr=LOR;
+            end
+        end
         function obj=get_HOM_dip(obj,center_correct)
             if ~isprop(obj,'all_HOM_fit_params')
                 disp('no fitting parameters found')
-                return
+                returnd
             end
           
             HOM_dip = zeros(length(obj.stage_positions),1);
+            peek = HOM_dip;
             
             for j = 0:length(obj.stage_positions)-1
                 if nargin>1
@@ -990,14 +1083,18 @@ classdef PCFS<dynamicprops
                     corr_select=obj.(f_name).cross_corr.corr(peak_pts(k)-N_points:peak_pts(k)+N_points);
                     peak_areas(k) = trapz(tau_select,corr_select);
                 end
-                
+                peek(j+1) = peak_areas(3);
                 HOM_dip(j+1) = peak_areas(2)./(peak_areas(1)+peak_areas(3));
             end
             
             if ~isprop(obj,'HOM_dip')
                 dummy=addprop(obj,'HOM_dip')
             end
+            if ~isprop(obj,'peak_trace')
+                dummy=addprop(obj,'peak_trace')
+            end
             obj.HOM_dip = HOM_dip;
+            obj.peak_trace = peek;
         end
         %% analyze low temperature PCFS data.
         function obj=get_blinking_corrected_PCFS_interferogram(obj)
@@ -1019,8 +1116,12 @@ classdef PCFS<dynamicprops
             subplot(3,1,1)
             legend_str=[];
             
+            if ~isprop(obj,'tau_select')
+                a = addprop(obj,'tau_select')
+            end
             for i=1:length(tau_select);
                 [dummy,index]=min((tau- tau_select(i)).^2);
+                DotD.tau_select.(strcat('tau',num2str(i))) = index;
                 plot(2*(obj.stage_positions-white_fringe),obj.blinking_corrected_PCFS_interferogram(index+1,:));
                 legend_str=[legend_str; {num2str(tau_select(i)/1E9)}];
                 hold on
@@ -1069,6 +1170,7 @@ classdef PCFS<dynamicprops
            
             
             mirror_intf=[fliplr(interferogram(:,index_white_fringe:end)),interferogram(:,(index_white_fringe+1):end)];
+
             mirror_stage=[-fliplr(obj.stage_positions(index_white_fringe:end)-white_fringe),obj.stage_positions((index_white_fringe+1):end)-white_fringe];
             
             interp_stage_pos=[min(mirror_stage):0.01:max(mirror_stage)];
@@ -1130,11 +1232,16 @@ classdef PCFS<dynamicprops
         end
         function obj=plot_low_T_spectral_corr(obj,tau_select,xlimit)
           tau=obj.tau;
+          if ~isprop(obj,'tau_indices')
+            dummy=addprop(obj,'tau_indices')
+          end
+          obj.tau_indices=[];
           legend_str=[];
           figure()
           subplot(2,1,1)
             for i=1:length(tau_select);
                 [dummy,index]=min((tau- tau_select(i)).^2);
+                obj.tau_indices(i) = index; 
                 plot(obj.mirrored_intf_spectral_corr.zeta,obj.mirrored_intf_spectral_corr.spectral_corr(index,:))
                 legend_str=[legend_str; {num2str(tau_select(i)/1E9)}];
                 hold on
@@ -1164,6 +1271,57 @@ classdef PCFS<dynamicprops
         end
         
         %% additional analysis functions
+        function obj=fit_spectral_corr(obj,FSS_list,num_Lor)
+            switch num_Lor
+                case 2
+                    FSS = FSS_list(1);
+                    fit_zeta = obj.spectral_correlation.zeta;
+                    fit_corr = obj.spectral_correlation.corr;
+                    
+                    cost_fx = @(params) sum((fit_corr-two_lorentzians(fit_zeta,params)).^2);
+                    
+                    params0 = [1,1,0,FSS,FSS/15,0.09]
+                    lb = [0.01,0.01,min(fit_zeta),FSS/2,FSS/300,0];
+                    ub = [200,200,max(fit_zeta),2*FSS,FSS/3,0.4];
+                    
+                    gs = GlobalSearch;
+                    problem = createOptimProblem('fmincon','x0',params0,...
+                        'objective',cost_fx,'lb',lb,'ub',ub);
+                    optim_params = run(gs,problem);
+                    
+                    obj.spectral_correlation.fitting = optim_params;
+                case 3
+                    %easy to make a similar 3 lorentzian fit code here
+                    return;
+                otherwise
+                    return;  
+            function spectral_corr = two_lorentzians(ZETA,params)
+                n=floor(length(ZETA)/2);
+
+                delta=abs(ZETA(2)-ZETA(1)); % energy difference. 
+                energy_vector=[(-n/2*delta):delta:n/2*delta];
+
+                a1 = params(1);
+                a2 = params(2);
+                
+                E0 = params(3);
+                FSS = params(4);
+                E1 = E0 + FSS;
+                
+                gamma = params(5);
+                c = params(6);
+                
+                Lorentz1=1./((energy_vector-E0).^2+(0.5*gamma).^2);
+                Lorentz2=1./((energy_vector-E1).^2+(0.5*gamma).^2);
+
+                % gamma is the FWHM. 
+                lineshape=a1*Lorentz1+a2*Lorentz2;
+
+                spectral_corr=xcorr(lineshape,lineshape);
+                spectral_corr=spectral_corr/max(spectral_corr)+c;
+                spectral_corr=spectral_corr/max(spectral_corr);
+            end
+        end
         function obj=plot_Fourier_Spectrum(obj)
                 %%Plots the Fourier Interferogram and Spectrum created with the
                 %Labview .scan functionality (file extension: .intf).
